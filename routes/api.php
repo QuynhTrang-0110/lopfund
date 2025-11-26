@@ -12,8 +12,9 @@ use App\Http\Controllers\ExpenseController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\ClassController;
 use App\Http\Controllers\FundAccountController;
-
-
+use App\Http\Controllers\ExpenseCommentController;
+use App\Http\Controllers\Api\PaymentCommentController;
+use App\Http\Controllers\NotificationController;
 // Auth cơ bản (Sanctum)
 Route::post('/register', [AuthController::class,'register']);
 Route::post('/login',    [AuthController::class,'login']);
@@ -62,7 +63,16 @@ Route::middleware('auth:sanctum')->group(function () {
     //phiếu không hợp lệ
     Route::post('/classes/{class}/payments/{payment}/invalidate', [PaymentController::class,'invalidate']);
     Route::get('/classes/{class}/payments/invalid', [PaymentController::class, 'invalidList']);
-
+    Route::get('payments/{payment}/comments', [PaymentCommentController::class, 'index']);
+    Route::post('payments/{payment}/comments', [PaymentCommentController::class, 'store']);
+    
+Route::middleware('auth:sanctum')->group(function () {
+    Route::prefix('notifications')->group(function () {
+        Route::get('/', [NotificationController::class, 'index']);
+        Route::post('/read-all', [NotificationController::class, 'markAllRead']);
+        Route::post('/{id}/read', [NotificationController::class, 'markRead']);
+    });
+});
 
     // xoá payment đã duyệt
     Route::middleware('auth:sanctum')->group(function () {
@@ -75,6 +85,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/classes/{class}/expense-requests', [ExpenseRequestController::class,'store']);
     Route::post('/classes/{class}/expense-requests/{req}/approve', [ExpenseRequestController::class,'approve']);
     Route::post('/classes/{class}/expense-requests/{req}/reject',  [ExpenseRequestController::class,'reject']);
+    // Expense comments (bình luận dưới khoản chi)
+    Route::get('/classes/{class}/expenses/{expense}/comments', [ExpenseCommentController::class, 'index']);
+    Route::post('/classes/{class}/expenses/{expense}/comments', [ExpenseCommentController::class, 'store']);
 
     Route::middleware('auth:sanctum')->group(function () {
     // Expenses

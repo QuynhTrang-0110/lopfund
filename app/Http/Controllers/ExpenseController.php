@@ -3,10 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Models\Classroom;
+use App\Services\FundNotificationService;
+
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Log;
 use App\Support\ClassAccess;
 use Symfony\Component\HttpFoundation\JsonResponse;
 
@@ -86,6 +89,18 @@ class ExpenseController extends Controller
         }
 
         $id = DB::table('expenses')->insertGetId($payload);
+
+        // ===== GỬI THÔNG BÁO KHI TẠO KHOẢN CHI MỚI =====
+        try {
+            $expenseRow = DB::table('expenses')->where('id', $id)->first();
+            if ($expenseRow) {
+                // Bạn định nghĩa hàm này trong FundNotificationService
+                // ví dụ type = 'expense'
+                FundNotificationService::expenseCreated($expenseRow);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('expenseCreated notification failed: '.$e->getMessage());
+        }
 
         return $this->showOne($id);
     }

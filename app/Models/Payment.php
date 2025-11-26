@@ -25,7 +25,12 @@ class Payment extends Model
 
     public function payer()    {                       // <-- dùng ClassMember
         return $this->belongsTo(ClassMember::class,'payer_id');
+    
     }
+public function comments()
+{
+    return $this->hasMany(PaymentComment::class);
+}
 
     public function verifier() { return $this->belongsTo(User::class,'verified_by'); }
 }

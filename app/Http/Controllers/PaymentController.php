@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Log;
 use App\Support\ClassAccess;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use App\Jobs\ProcessPaymentProof;
+use App\Services\FundNotificationService;
 
 class PaymentController extends Controller
 {
@@ -70,6 +71,14 @@ class PaymentController extends Controller
             $invoice->update(['status' => 'submitted']);
         }
 
+        // ===== GỬI THÔNG BÁO KHI CÓ PHIẾU NỘP MỚI =====
+        try {
+            // Service tự lo tìm class_id, người nhận... từ payment
+            FundNotificationService::paymentSubmitted($pay);
+        } catch (\Throwable $e) {
+            Log::warning('paymentSubmitted notification failed: '.$e->getMessage());
+        }
+
         return response()->json(['payment' => $pay], 201);
     }
 
@@ -94,6 +103,8 @@ class PaymentController extends Controller
             return response()->json(['message' => 'Chưa chọn file'], 422);
         }
 
+        $wasSubmitted = $payment->status === 'submitted';
+
         // Lưu file
         $path = $file->store('proofs', 'public');
         $payment->proof_path = asset('storage/'.$path);
@@ -112,7 +123,18 @@ class PaymentController extends Controller
         Log::info("Dispatch OCR upload payment #{$payment->id} abs={$abs}");
         ProcessPaymentProof::dispatch($payment->id, $abs)->onQueue('payments');
 
-        return response()->json(['payment' => $payment->fresh()]);
+        $payment->refresh();
+
+        // ===== THÔNG BÁO KHI TỪ TRẠNG THÁI KHÁC CHUYỂN SANG SUBMITTED =====
+        try {
+            if (!$wasSubmitted && $payment->status === 'submitted') {
+                FundNotificationService::paymentSubmitted($payment);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('paymentSubmitted (uploadProof) notification failed: '.$e->getMessage());
+        }
+
+        return response()->json(['payment' => $payment]);
     }
 
     // ====================== TREASURER/OWNER: LIST ======================
@@ -494,99 +516,100 @@ class PaymentController extends Controller
 
         return response()->json(['message' => 'Đã chuyển sang KHÔNG HỢP LỆ', 'status' => 'invalid']);
     }
-// GET /classes/{class}/payments/invalid?fee_cycle_id=&member_id=&user_id=&from=YYYY-MM-DD&to=YYYY-MM-DD&group=cycle&all=1
-public function invalidList(Request $r, Classroom $class): JsonResponse
-{
-    ClassAccess::ensureMember($r->user(), $class);
 
-    $feeCycleId = $r->query('fee_cycle_id');
-    $from       = $r->query('from');
-    $to         = $r->query('to');
-    $group      = $r->query('group');   // 'cycle' | null
-    $forceAll   = $r->boolean('all');   // member thường chỉ xem của mình, trừ khi all=1 hoặc là thủ quỹ
+    // GET /classes/{class}/payments/invalid?... (giữ nguyên)
+    public function invalidList(Request $r, Classroom $class): JsonResponse
+    {
+        ClassAccess::ensureMember($r->user(), $class);
 
-    // Xác định người dùng hiện tại trong lớp
-    $me = ClassMember::where('class_id', $class->id)
-        ->where('user_id', $r->user()->id)->firstOrFail();
-    $isTreasurerLike = in_array($me->role, ['owner','treasurer'], true);
+        $feeCycleId = $r->query('fee_cycle_id');
+        $from       = $r->query('from');
+        $to         = $r->query('to');
+        $group      = $r->query('group');   // 'cycle' | null
+        $forceAll   = $r->boolean('all');   // member thường chỉ xem của mình, trừ khi all=1 hoặc là thủ quỹ
 
-    // ----- Filter theo người nộp -----
-    $filterMemberId = null;
-    if ($r->filled('member_id')) {
-        $filterMemberId = (int) $r->query('member_id');
-    } elseif ($r->filled('user_id')) {
-        $u = ClassMember::where('class_id', $class->id)
-            ->where('user_id', (int) $r->query('user_id'))->first();
-        $filterMemberId = $u?->id;
+        // Xác định người dùng hiện tại trong lớp
+        $me = ClassMember::where('class_id', $class->id)
+            ->where('user_id', $r->user()->id)->firstOrFail();
+        $isTreasurerLike = in_array($me->role, ['owner','treasurer'], true);
+
+        // ----- Filter theo người nộp -----
+        $filterMemberId = null;
+        if ($r->filled('member_id')) {
+            $filterMemberId = (int) $r->query('member_id');
+        } elseif ($r->filled('user_id')) {
+            $u = ClassMember::where('class_id', $class->id)
+                ->where('user_id', (int) $r->query('user_id'))->first();
+            $filterMemberId = $u?->id;
+        }
+        if (!$isTreasurerLike && !$forceAll) {
+            if ($filterMemberId === null) $filterMemberId = $me->id;
+        }
+
+        // Cột ngày dùng để sort/filter
+        $dateCol = Schema::hasColumn('payments', 'invalidated_at') ? 'invalidated_at' : 'created_at';
+
+        $q = DB::table('payments as p')
+            ->join('invoices as i', 'i.id', '=', 'p.invoice_id')
+            ->join('fee_cycles as fc', 'fc.id', '=', 'i.fee_cycle_id')
+            ->join('class_members as cm', 'cm.id', '=', 'p.payer_id')
+            ->join('users as u', 'u.id', '=', 'cm.user_id')
+            ->leftJoin('users as invu', 'invu.id', '=', 'p.invalidated_by')
+            ->where('fc.class_id', $class->id)
+            ->where('p.status', 'invalid')
+            ->when($feeCycleId, fn($q) => $q->where('i.fee_cycle_id', $feeCycleId))
+            ->when($filterMemberId, fn($q) => $q->where('p.payer_id', $filterMemberId))
+            ->when($from, fn($q) => $q->whereDate("p.$dateCol", '>=', $from))
+            ->when($to,   fn($q) => $q->whereDate("p.$dateCol", '<=', $to))
+            ->orderByDesc("p.$dateCol")
+            ->select([
+                'p.id','p.invoice_id','p.amount','p.status','p.method','p.txn_ref','p.proof_path',
+                "p.$dateCol as invalid_at",
+                // meta không hợp lệ
+                'p.invalidated_at','p.invalid_reason','p.invalid_note',
+                'invu.name as invalidated_by_name',
+                // thông tin hiển thị
+                'u.name as payer_name','u.email as payer_email',
+                'i.amount as invoice_amount','i.status as invoice_status',
+                'fc.id as cycle_id','fc.name as cycle_name',
+            ]);
+
+        if ($group === 'cycle') {
+            $rows = $q->get();
+            $grouped = $rows->groupBy('cycle_id')->map(function ($items, $cycleId) {
+                $first = $items->first();
+                return [
+                    'cycle_id'   => (int) $cycleId,
+                    'cycle_name' => $first->cycle_name,
+                    'payments'   => $items->map(function ($x) {
+                        return [
+                            'id'                 => (int) $x->id,
+                            'invoice_id'         => (int) $x->invoice_id,
+                            'amount'             => (int) $x->amount,
+                            'method'             => $x->method,
+                            'status'             => $x->status,           // luôn 'invalid'
+                            'txn_ref'            => $x->txn_ref,
+                            'proof_path'         => $x->proof_path,
+                            'invalid_at'         => $x->invalid_at,       // thời điểm đánh dấu
+                            'payer_name'         => $x->payer_name,
+                            'payer_email'        => $x->payer_email,
+                            'invoice_amount'     => (int) $x->invoice_amount,
+                            'invoice_status'     => $x->invoice_status,
+                            'invalidated_at'     => $x->invalidated_at,
+                            'invalid_reason'     => $x->invalid_reason,
+                            'invalid_note'       => $x->invalid_note,
+                            'invalidated_by_name'=> $x->invalidated_by_name,
+                        ];
+                    })->values(),
+                ];
+            })->values();
+
+            return response()->json(['cycles' => $grouped]);
+        }
+
+        // danh sách phẳng
+        return response()->json(['payments' => $q->get()]);
     }
-    if (!$isTreasurerLike && !$forceAll) {
-        if ($filterMemberId === null) $filterMemberId = $me->id;
-    }
-
-    // Cột ngày dùng để sort/filter
-    $dateCol = Schema::hasColumn('payments', 'invalidated_at') ? 'invalidated_at' : 'created_at';
-
-    $q = DB::table('payments as p')
-        ->join('invoices as i', 'i.id', '=', 'p.invoice_id')
-        ->join('fee_cycles as fc', 'fc.id', '=', 'i.fee_cycle_id')
-        ->join('class_members as cm', 'cm.id', '=', 'p.payer_id')
-        ->join('users as u', 'u.id', '=', 'cm.user_id')
-        ->leftJoin('users as invu', 'invu.id', '=', 'p.invalidated_by')
-        ->where('fc.class_id', $class->id)
-        ->where('p.status', 'invalid')
-        ->when($feeCycleId, fn($q) => $q->where('i.fee_cycle_id', $feeCycleId))
-        ->when($filterMemberId, fn($q) => $q->where('p.payer_id', $filterMemberId))
-        ->when($from, fn($q) => $q->whereDate("p.$dateCol", '>=', $from))
-        ->when($to,   fn($q) => $q->whereDate("p.$dateCol", '<=', $to))
-        ->orderByDesc("p.$dateCol")
-        ->select([
-            'p.id','p.invoice_id','p.amount','p.status','p.method','p.txn_ref','p.proof_path',
-            "p.$dateCol as invalid_at",
-            // meta không hợp lệ
-            'p.invalidated_at','p.invalid_reason','p.invalid_note',
-            'invu.name as invalidated_by_name',
-            // thông tin hiển thị
-            'u.name as payer_name','u.email as payer_email',
-            'i.amount as invoice_amount','i.status as invoice_status',
-            'fc.id as cycle_id','fc.name as cycle_name',
-        ]);
-
-    if ($group === 'cycle') {
-        $rows = $q->get();
-        $grouped = $rows->groupBy('cycle_id')->map(function ($items, $cycleId) {
-            $first = $items->first();
-            return [
-                'cycle_id'   => (int) $cycleId,
-                'cycle_name' => $first->cycle_name,
-                'payments'   => $items->map(function ($x) {
-                    return [
-                        'id'                 => (int) $x->id,
-                        'invoice_id'         => (int) $x->invoice_id,
-                        'amount'             => (int) $x->amount,
-                        'method'             => $x->method,
-                        'status'             => $x->status,           // luôn 'invalid'
-                        'txn_ref'            => $x->txn_ref,
-                        'proof_path'         => $x->proof_path,
-                        'invalid_at'         => $x->invalid_at,       // thời điểm đánh dấu
-                        'payer_name'         => $x->payer_name,
-                        'payer_email'        => $x->payer_email,
-                        'invoice_amount'     => (int) $x->invoice_amount,
-                        'invoice_status'     => $x->invoice_status,
-                        'invalidated_at'     => $x->invalidated_at,
-                        'invalid_reason'     => $x->invalid_reason,
-                        'invalid_note'       => $x->invalid_note,
-                        'invalidated_by_name'=> $x->invalidated_by_name,
-                    ];
-                })->values(),
-            ];
-        })->values();
-
-        return response()->json(['cycles' => $grouped]);
-    }
-
-    // danh sách phẳng
-    return response()->json(['payments' => $q->get()]);
-}
 
     // ====================== DEPRECATED: XOÁ PHIẾU ĐÃ DUYỆT ======================
 
