@@ -1,5 +1,5 @@
 <?php
-
+use App\Http\Controllers\Api\FundNotificationController;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Log;
 use App\Http\Controllers\AuthController;
@@ -36,6 +36,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/classes/{class}/my-role', [ClassController::class, 'myRole']);
 
     });
+    //Thông báo 
+    Route::middleware('auth:sanctum')->group(function () {
+
+    Route::get('/notifications', [FundNotificationController::class, 'index']);
+    Route::get('/notifications/unread-count', [FundNotificationController::class, 'unreadCount']);
+    Route::post('/notifications/{id}/read', [FundNotificationController::class, 'markAsRead']);
+    Route::post('/notifications/read-all', [FundNotificationController::class, 'markAllAsRead']);
+
+});
+
     // Fee Cycles & Invoices
     Route::middleware('auth:sanctum')->group(function () {
     Route::get('/classes/{class}/fee-cycles', [FeeCycleController::class, 'index']);

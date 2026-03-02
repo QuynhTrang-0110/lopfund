@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Classroom;
+use App\Models\Expense;
 use App\Services\FundNotificationService;
 
 use Illuminate\Http\Request;
@@ -15,7 +16,10 @@ use Symfony\Component\HttpFoundation\JsonResponse;
 
 class ExpenseController extends Controller
 {
-    // GET /classes/{class}/expenses?fee_cycle_id=...
+    /**
+     * GET /classes/{class}/expenses?fee_cycle_id=...
+     * Member xem danh sách khoản chi.
+     */
     public function index(Request $r, Classroom $class): JsonResponse
     {
         ClassAccess::ensureMember($r->user(), $class);
@@ -38,7 +42,7 @@ class ExpenseController extends Controller
             ])
             ->get();
 
-        // ➜ Chuẩn hóa thêm receipt_url (full URL) cho FE
+        // Chuẩn hóa thêm receipt_url (full URL) cho FE
         $items = $rows->map(function ($e) {
             $arr = (array) $e;
             $arr['receipt_url'] = !empty($e->receipt_path)
@@ -47,11 +51,13 @@ class ExpenseController extends Controller
             return $arr;
         });
 
-        // ⚠️ Quan trọng: return $items thay vì $rows
         return response()->json(['expenses' => $items]);
     }
 
-    // POST /classes/{class}/expenses
+    /**
+     * POST /classes/{class}/expenses
+     * Thủ quỹ tạo khoản chi mới.
+     */
     public function store(Request $r, Classroom $class): JsonResponse
     {
         ClassAccess::ensureTreasurerLike($r->user(), $class);
@@ -63,6 +69,7 @@ class ExpenseController extends Controller
             'note'         => 'nullable|string',
         ]);
 
+        // Nếu có fee_cycle_id thì phải thuộc lớp này
         if (!empty($data['fee_cycle_id'])) {
             $ok = DB::table('fee_cycles')
                 ->where('id', $data['fee_cycle_id'])
@@ -81,6 +88,7 @@ class ExpenseController extends Controller
             'updated_at'   => now(),
         ];
 
+        // Ghi nhận người tạo / người chi, tuỳ DB hiện tại
         if (Schema::hasColumn('expenses', 'created_by')) {
             $payload['created_by'] = $r->user()->id;
         }
@@ -88,24 +96,30 @@ class ExpenseController extends Controller
             $payload['paid_by'] = $r->user()->id;
         }
 
+        // Tạo record
         $id = DB::table('expenses')->insertGetId($payload);
+
+        // Lấy lại bằng model để truyền vào service thông báo
+        $expense = Expense::find($id);
 
         // ===== GỬI THÔNG BÁO KHI TẠO KHOẢN CHI MỚI =====
         try {
-            $expenseRow = DB::table('expenses')->where('id', $id)->first();
-            if ($expenseRow) {
-                // Bạn định nghĩa hàm này trong FundNotificationService
-                // ví dụ type = 'expense'
-                FundNotificationService::expenseCreated($expenseRow);
+            if ($expense) {
+                // Định nghĩa hàm này trong FundNotificationService
+                // ví dụ: public static function expenseCreated(Expense $expense) { ... }
+                FundNotificationService::expenseCreated($expense);
             }
         } catch (\Throwable $e) {
-            Log::warning('expenseCreated notification failed: '.$e->getMessage());
+            Log::warning('expenseCreated notification failed: ' . $e->getMessage());
         }
 
         return $this->showOne($id);
     }
 
-    // PUT /classes/{class}/expenses/{expense}
+    /**
+     * PUT /classes/{class}/expenses/{expense}
+     * Cập nhật khoản chi.
+     */
     public function update(Request $r, Classroom $class, $expenseId): JsonResponse
     {
         ClassAccess::ensureTreasurerLike($r->user(), $class);
@@ -141,7 +155,10 @@ class ExpenseController extends Controller
         return $this->showOne($expenseId);
     }
 
-    // DELETE /classes/{class}/expenses/{expense}
+    /**
+     * DELETE /classes/{class}/expenses/{expense}
+     * Xoá khoản chi.
+     */
     public function destroy(Request $r, Classroom $class, $expenseId): JsonResponse
     {
         ClassAccess::ensureTreasurerLike($r->user(), $class);
@@ -158,7 +175,10 @@ class ExpenseController extends Controller
         return response()->json(['deleted' => true]);
     }
 
-    // POST /classes/{class}/expenses/{expense}/receipt
+    /**
+     * POST /classes/{class}/expenses/{expense}/receipt
+     * Upload / cập nhật hoá đơn (ảnh) cho khoản chi.
+     */
     public function uploadReceipt(Request $r, Classroom $class, $expenseId): JsonResponse
     {
         ClassAccess::ensureTreasurerLike($r->user(), $class);
@@ -180,14 +200,16 @@ class ExpenseController extends Controller
         DB::table('expenses')
             ->where('id', $expenseId)
             ->update([
-                'receipt_path' => $path, // giữ tương đối trong DB
+                'receipt_path' => $path, // lưu path tương đối trong DB
                 'updated_at'   => now(),
             ]);
 
         return $this->showOne($expenseId);
     }
 
-    // Helper: trả detail đồng nhất (kèm receipt_url)
+    /**
+     * Helper: trả về 1 expense kèm receipt_url chuẩn cho FE.
+     */
     private function showOne(int $id): JsonResponse
     {
         $userFkCol = Schema::hasColumn('expenses', 'created_by') ? 'created_by' : 'paid_by';
@@ -202,7 +224,8 @@ class ExpenseController extends Controller
                 'e.created_at', 'e.updated_at',
                 'u.name as created_by_name',
                 'fc.name as cycle_name',
-            ])->first();
+            ])
+            ->first();
 
         if ($row) {
             $row = (array) $row;
