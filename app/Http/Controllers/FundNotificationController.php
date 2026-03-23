@@ -20,11 +20,30 @@ class FundNotificationController extends Controller
                 'n.title',
                 'n.amount',
                 'n.created_at',
-                'r.is_read as read',
-                DB::raw('JSON_UNQUOTE(JSON_EXTRACT(n.data, "$.event")) as event'),
+                'r.is_read',
                 DB::raw('n.data as data'),
             ])
             ->paginate(20);
+
+        $items->setCollection(
+            $items->getCollection()->map(function ($row) {
+                $item = (array) $row;
+
+                $data = $item['data'] ?? null;
+                if (is_string($data) && $data !== '') {
+                    $decoded = json_decode($data, true);
+                    $data = is_array($decoded) ? $decoded : [];
+                } elseif (!is_array($data)) {
+                    $data = [];
+                }
+
+                $item['data'] = $data;
+                $item['event'] = $data['event'] ?? null;
+                $item['is_read'] = (bool) ($item['is_read'] ?? false);
+
+                return $item;
+            })
+        );
 
         return response()->json($items);
     }

@@ -4,39 +4,27 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration
-{
+return new class extends Migration {
     public function up(): void
     {
-        Schema::create('expense_comments', function (Blueprint $table) {
-            $table->bigIncrements('id');
+        Schema::create('fund_notifications', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('class_id');
+            $table->string('type', 50);
+            $table->string('title');
+            $table->bigInteger('amount')->nullable();
+            $table->json('data')->nullable();
+            $table->unsignedBigInteger('created_by')->nullable();
+            $table->timestamps();
 
-            $table->unsignedBigInteger('expense_id');
-            $table->unsignedBigInteger('user_id');
-
-            $table->text('body'); // nội dung bình luận
-
-            $table->timestamp('created_at')->useCurrent();
-            $table->timestamp('updated_at')->nullable();
-
-            // FK
-            $table->foreign('expense_id')
-                ->references('id')
-                ->on('expenses')
-                ->onDelete('cascade');
-
-            $table->foreign('user_id')
-                ->references('id')
-                ->on('users')
-                ->onDelete('cascade');
-
-            $table->index('expense_id');
-            $table->index('user_id');
+            $table->index('class_id');
+            $table->index('type');
+            $table->index('created_by');
         });
     }
 
     public function down(): void
     {
-        Schema::dropIfExists('expense_comments');
+        Schema::dropIfExists('fund_notifications');
     }
 };

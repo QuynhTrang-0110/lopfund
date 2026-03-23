@@ -95,7 +95,8 @@ class FundNotificationService
             title: 'Đã phát hóa đơn kỳ thu: ' . $cycleName,
             amount: $amount,
             data: [
-                'event' => 'invoice_generated',
+                'event' => 'generated',
+                'class_id' => $classId,
                 'fee_cycle_id' => $cycleId,
                 'amount' => $amount,
             ],
@@ -262,11 +263,50 @@ class FundNotificationService
             amount: (int) $expense->amount,
             data: [
                 'event' => 'created',
+                'class_id' => $classId,
                 'expense_id' => $expense->id,
                 'fee_cycle_id' => $expense->fee_cycle_id,
                 'amount' => (int) $expense->amount,
             ],
             createdBy: $createdBy,
+        );
+    }
+
+    public static function expenseCommented(
+        int $classId,
+        int $expenseId,
+        string $expenseTitle,
+        int $commenterUserId,
+        string $commenterName,
+        ?int $feeCycleId = null,
+    ): ?FundNotification {
+        if ($classId <= 0 || $expenseId <= 0 || $commenterUserId <= 0) {
+            return null;
+        }
+
+        $userIds = ClassMember::where('class_id', $classId)
+            ->where('status', 'active')
+            ->where('user_id', '!=', $commenterUserId)
+            ->pluck('user_id')
+            ->all();
+
+        if (empty($userIds)) {
+            return null;
+        }
+
+        return self::notifyUsers(
+            classId: $classId,
+            userIds: $userIds,
+            type: 'expense_comment',
+            title: $commenterName . ' đã bình luận ở khoản chi: ' . $expenseTitle,
+            data: [
+                'event' => 'commented',
+                'class_id' => $classId,
+                'expense_id' => $expenseId,
+                'fee_cycle_id' => $feeCycleId,
+                'commenter_user_id' => $commenterUserId,
+            ],
+            createdBy: $commenterUserId,
         );
     }
 }

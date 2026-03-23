@@ -3,58 +3,94 @@
 namespace App\Http\Controllers;
 
 use App\Models\Classroom;
-use App\Models\ExpenseRequest;
-use App\Models\ExpenseApproval;
-use Illuminate\Http\Request;
+use App\Services\FundNotificationService;
 use App\Support\ClassAccess;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
-class ExpenseRequestController extends Controller
+class ExpenseCommentController extends Controller
 {
-    public function index(Request $r, Classroom $class)
+    public function index(Request $request, Classroom $class, int $expenseId): JsonResponse
     {
-        ClassAccess::ensureMember($r->user(), $class);
-        return ExpenseRequest::where('class_id',$class->id)->orderByDesc('created_at')->paginate(20);
+        ClassAccess::ensureMember($request->user(), $class);
+
+        $expense = DB::table('expenses')->where('id', $expenseId)->first();
+        abort_unless(
+            $expense && (int) $expense->class_id === (int) $class->id,
+            404,
+            'Expense không thuộc lớp'
+        );
+
+        $rows = DB::table('expense_comments as c')
+            ->join('users as u', 'u.id', '=', 'c.user_id')
+            ->where('c.expense_id', $expenseId)
+            ->orderBy('c.created_at')
+            ->select([
+                'c.id',
+                'c.expense_id',
+                'c.user_id',
+                'c.body',
+                'c.created_at',
+                'c.updated_at',
+                'u.name as user_name',
+            ])
+            ->get();
+
+        return response()->json(['comments' => $rows]);
     }
 
-    public function store(Request $r, Classroom $class)
+    public function store(Request $request, Classroom $class, int $expenseId): JsonResponse
     {
-        ClassAccess::ensureMember($r->user(), $class);
+        ClassAccess::ensureMember($request->user(), $class);
 
-        $data = $r->validate([
-            'title'=>'required|string',
-            'reason'=>'nullable|string',
-            'amount_est'=>'required|integer|min:0'
+        $expense = DB::table('expenses')->where('id', $expenseId)->first();
+        abort_unless(
+            $expense && (int) $expense->class_id === (int) $class->id,
+            404,
+            'Expense không thuộc lớp'
+        );
+
+        $data = $request->validate([
+            'body' => 'required|string|max:2000',
         ]);
-        $data['class_id'] = $class->id;
-        $data['requested_by'] = $r->user()->id;
-        $req = ExpenseRequest::create($data);
-        return response()->json($req, 201);
-    }
 
-    public function approve(Request $r, Classroom $class, ExpenseRequest $req)
-    {
-        ClassAccess::ensureOwner($r->user(), $class);
-        abort_unless($req->class_id === $class->id, 404);
+        $id = DB::table('expense_comments')->insertGetId([
+            'expense_id' => $expenseId,
+            'user_id'    => $request->user()->id,
+            'body'       => $data['body'],
+            'created_at' => now(),
+            'updated_at' => null,
+        ]);
 
-        // phiếu duyệt nhanh 1 người (treasurer/owner)
-        $req->update(['status'=>'approved']);
-        ExpenseApproval::updateOrCreate(
-            ['request_id'=>$req->id, 'voter_id'=>$r->user()->id],
-            ['vote'=>'approve']
-        );
-        return response()->json($req);
-    }
+        $comment = DB::table('expense_comments as c')
+            ->join('users as u', 'u.id', '=', 'c.user_id')
+            ->where('c.id', $id)
+            ->select([
+                'c.id',
+                'c.expense_id',
+                'c.user_id',
+                'c.body',
+                'c.created_at',
+                'c.updated_at',
+                'u.name as user_name',
+            ])
+            ->first();
 
-    public function reject(Request $r, Classroom $class, ExpenseRequest $req)
-    {
-        ClassAccess::ensureTreasurerLike($r->user(), $class);
-        abort_unless($req->class_id === $class->id, 404);
+               try {
+            FundNotificationService::expenseCommented(
+                classId: (int) $class->id,
+                expenseId: (int) $expenseId,
+                expenseTitle: (string) ($expense->title ?? 'Khoản chi'),
+                commenterUserId: (int) $request->user()->id,
+                commenterName: (string) ($request->user()->name ?? $request->user()->email ?? 'Thành viên'),
+                feeCycleId: isset($expense->fee_cycle_id) ? (int) $expense->fee_cycle_id : null,
+            );
+        } catch (\Throwable $e) {
+            Log::warning('expenseCommented notification failed: ' . $e->getMessage());
+        }
 
-        $req->update(['status'=>'rejected']);
-        ExpenseApproval::updateOrCreate(
-            ['request_id'=>$req->id, 'voter_id'=>$r->user()->id],
-            ['vote'=>'reject']
-        );
-        return response()->json($req);
+        return response()->json(['comment' => $comment], 201);
     }
 }

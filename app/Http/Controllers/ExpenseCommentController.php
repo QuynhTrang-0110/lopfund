@@ -3,10 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Classroom;
+use App\Services\FundNotificationService;
 use App\Support\ClassAccess;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ExpenseCommentController extends Controller
 {
@@ -16,10 +18,8 @@ class ExpenseCommentController extends Controller
      */
     public function index(Request $request, Classroom $class, int $expenseId): JsonResponse
     {
-        // Phải là thành viên lớp
         ClassAccess::ensureMember($request->user(), $class);
 
-        // Kiểm tra expense có thuộc class không
         $expense = DB::table('expenses')->where('id', $expenseId)->first();
         abort_unless(
             $expense && (int) $expense->class_id === (int) $class->id,
@@ -53,7 +53,6 @@ class ExpenseCommentController extends Controller
     {
         ClassAccess::ensureMember($request->user(), $class);
 
-        // Kiểm tra expense có thuộc class không
         $expense = DB::table('expenses')->where('id', $expenseId)->first();
         abort_unless(
             $expense && (int) $expense->class_id === (int) $class->id,
@@ -67,8 +66,8 @@ class ExpenseCommentController extends Controller
 
         $id = DB::table('expense_comments')->insertGetId([
             'expense_id' => $expenseId,
-            'user_id'    => $request->user()->id,
-            'body'       => $data['body'],
+            'user_id' => $request->user()->id,
+            'body' => $data['body'],
             'created_at' => now(),
             'updated_at' => null,
         ]);
@@ -86,6 +85,19 @@ class ExpenseCommentController extends Controller
                 'u.name as user_name',
             ])
             ->first();
+
+        try {
+            FundNotificationService::expenseCommented(
+                classId: (int) $class->id,
+                expenseId: (int) $expenseId,
+                expenseTitle: (string) ($expense->title ?? 'Khoản chi'),
+                commenterUserId: (int) $request->user()->id,
+                commenterName: (string) ($request->user()->name ?? $request->user()->email ?? 'Thành viên'),
+                feeCycleId: isset($expense->fee_cycle_id) ? (int) $expense->fee_cycle_id : null,
+            );
+        } catch (\Throwable $e) {
+            Log::warning('expenseCommented notification failed: ' . $e->getMessage());
+        }
 
         return response()->json(['comment' => $comment], 201);
     }

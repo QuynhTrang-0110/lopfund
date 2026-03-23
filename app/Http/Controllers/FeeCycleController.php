@@ -6,9 +6,10 @@ use App\Models\ClassMember;
 use App\Models\Classroom;
 use App\Models\FeeCycle;
 use App\Models\Invoice;
-use App\Support\ClassAccess;
 use App\Services\FundNotificationService;
+use App\Support\ClassAccess;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class FeeCycleController extends Controller
 {
@@ -60,22 +61,22 @@ class FeeCycleController extends Controller
             ->first();
 
         abort_unless($member && in_array($member->role, ['owner', 'treasurer'], true), 403);
-        abort_unless($cycle->class_id === $class->id, 404);
+        abort_unless((int) $cycle->class_id === (int) $class->id, 404);
 
         $amount = (int) $r->input('amount_per_member', $cycle->amount_per_member);
 
         $activeMembers = ClassMember::where('class_id', $class->id)
             ->where('status', 'active')
-            ->pluck('id');
+            ->get(['id', 'user_id']);
 
         $created = 0;
         $skipped = 0;
 
-        foreach ($activeMembers as $memberId) {
+        foreach ($activeMembers as $memberRow) {
             $invoice = Invoice::firstOrCreate(
                 [
                     'fee_cycle_id' => $cycle->id,
-                    'member_id' => $memberId,
+                    'member_id' => $memberRow->id,
                 ],
                 [
                     'title' => $cycle->name,
@@ -94,14 +95,14 @@ class FeeCycleController extends Controller
         if ($created > 0) {
             try {
                 FundNotificationService::invoicesGenerated(
-                    classId: $class->id,
-                    cycleId: $cycle->id,
-                    cycleName: $cycle->name,
-                    amount: $amount,
-                    createdBy: $r->user()->id,
+                    classId: (int) $class->id,
+                    cycleId: (int) $cycle->id,
+                    cycleName: (string) $cycle->name,
+                    amount: (int) $amount,
+                    createdBy: (int) $r->user()->id,
                 );
             } catch (\Throwable $e) {
-                \Log::warning('invoicesGenerated notification failed: ' . $e->getMessage());
+                Log::warning('invoicesGenerated notification failed: ' . $e->getMessage());
             }
         }
 
@@ -117,7 +118,7 @@ class FeeCycleController extends Controller
     public function report(Request $r, Classroom $class, FeeCycle $cycle)
     {
         ClassAccess::ensureMember($r->user(), $class);
-        abort_unless($cycle->class_id === $class->id, 404);
+        abort_unless((int) $cycle->class_id === (int) $class->id, 404);
 
         $summary = Invoice::where('fee_cycle_id', $cycle->id)
             ->selectRaw("COUNT(*) as total,
@@ -144,7 +145,7 @@ class FeeCycleController extends Controller
     public function updateStatus(Request $r, Classroom $class, FeeCycle $cycle)
     {
         ClassAccess::ensureTreasurerLike($r->user(), $class);
-        abort_unless($cycle->class_id === $class->id, 404);
+        abort_unless((int) $cycle->class_id === (int) $class->id, 404);
 
         $data = $r->validate([
             'status' => 'required|in:draft,active,closed',
